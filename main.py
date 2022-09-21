@@ -15,8 +15,10 @@ from timm.optim import create_optimizer
 from timm.utils import NativeScaler
 from torch.utils.tensorboard import SummaryWriter
 
+from torch.utils.data import RandomSampler
+from pytorch_metric_learning.samplers import MPerClassSampler
 from pytorch_metric_learning.distances import CosineSimilarity
-from pytorch_metric_learning.losses import ContrastiveLoss, CrossBatchMemory
+from pytorch_metric_learning.losses import ContrastiveLoss
 
 from xbm import XBM
 from datasets import get_dataset
@@ -27,70 +29,49 @@ from regularizer import DifferentialEntropyRegularization
 def get_args_parser():
     parser = argparse.ArgumentParser('Training Vision Transformers for Image Retrieval', add_help=False)
 
-    parser.add_argument('--max-iter', default=2_000, type=int)
-    parser.add_argument('--batch-size', default=64, type=int)
-
     # Model parameters
-    parser.add_argument('--model', default='deit_small_patch16_224', type=str, metavar='MODEL',
-                        help='Name of model to train')
+    parser.add_argument('--model', default='deit_small_distilled_patch16_224', type=str, help='Name of model to train')
     parser.add_argument('--input-size', default=224, type=int, help='images input size')
-
-    parser.add_argument('--drop', type=float, default=0.0, metavar='PCT',
-                        help='Dropout rate (default: 0.)')
-    parser.add_argument('--drop-path', type=float, default=0.1, metavar='PCT',
-                        help='Drop path rate (default: 0.1)')
+    parser.add_argument('--drop', type=float, default=0.0, help='Dropout rate (default: 0.)')
+    parser.add_argument('--drop-path', type=float, default=0.1, metavar='PCT', help='Drop path rate (default: 0.1)')
 
     # Optimizer parameters
-    parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
-                        help='Optimizer (default: "adamw"')
-    parser.add_argument('--opt-eps', default=1e-8, type=float, metavar='EPSILON',
-                        help='Optimizer Epsilon (default: 1e-8)')
-    parser.add_argument('--opt-betas', default=None, type=float, nargs='+', metavar='BETA',
-                        help='Optimizer Betas (default: None, use opt default)')
-    parser.add_argument('--clip-grad', type=float, default=None, metavar='NORM',
-                        help='Clip gradient norm (default: None, no clipping)')
-    parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
-                        help='SGD momentum (default: 0.9)')
-    parser.add_argument('--weight-decay', type=float, default=5e-4,
-                        help='weight decay (default: 5e-4)')
-
-    # Learning rate schedule parameters
-    parser.add_argument('--lr', type=float, default=3e-5, metavar='LR',
-                        help='learning rate (3e-5 for category level)')
+    parser.add_argument('--max-iter', default=2_000, type=int)
+    parser.add_argument('--batch-size', default=64, type=int)
+    parser.add_argument('--lr', type=float, default=3e-5, help='learning rate (3e-5 for category level)')
+    parser.add_argument('--opt', default='adamw', type=str, help='Optimizer (default: "adamw"')
+    parser.add_argument('--opt-eps', default=1e-8, type=float, help='Optimizer Epsilon (default: 1e-8)')
+    parser.add_argument('--opt-betas', default=None, type=float, nargs='+', help='Optimizer Betas (default: None, use opt default)')
+    parser.add_argument('--clip-grad', type=float, default=None, help='Clip gradient norm (default: None, no clipping)')
+    parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum (default: 0.9)')
+    parser.add_argument('--weight-decay', type=float, default=5e-4, help='weight decay (default: 5e-4)')
 
     # Dataset parameters
-    parser.add_argument('--data-set', default='sop', choices=['cub200', 'sop', 'inshop'],
-                        type=str, help='dataset path')
-    parser.add_argument('--data-path', default='./data/Stanford_Online_Products', type=str,
-                        help='dataset path')
-    parser.add_argument('--rank', default=[1, 2, 4, 8], nargs="+", type=int, help="compute recall@r for each r")
+    parser.add_argument('--dataset', default='cub200', choices=['cub200', 'sop', 'inshop'], type=str, help='dataset path')
+    parser.add_argument('--data-path', default='/data/CUB_200_2011', type=str, help='dataset path')
+    parser.add_argument('--m', default=0, type=int, help="sample m images per class")
+    parser.add_argument('--rank', default=[1, 2, 4, 8], nargs="+", type=int, help="compute recall@r")
+    parser.add_argument('--num-workers', default=16, type=int)
+    parser.add_argument('--pin-mem', action='store_true')
+    parser.add_argument('--no-pin-mem', action='store_false', dest='pin_mem')
+    parser.set_defaults(pin_mem=True)
 
     # Loss parameters
-    parser.add_argument('--lambda-reg', type=float, default=0.7,
-                        help="strength of differential entropy regularization(lambda)")
+    parser.add_argument('--lambda-reg', type=float, default=0.7, help="regularization strength")
     parser.add_argument('--margin', type=float, default=0.5,
                         help="negative margin of contrastive loss(beta)")
 
-    # XBM parameters
-    parser.add_argument('--xbm-warmup-steps', type=int, default=0, help="activate xbm after 1,000 steps")
+    # xbm parameters
     parser.add_argument('--memory-ratio', type=float, default=1.0, help="size of the xbm queue")
-    parser.add_argument('--xbm-random-init', action='store_true',
-                        help="if set true, initialize queue with randomly sampled training images after warmup")
-    # parser.set_defaults(xbm_random_init=True)
     parser.add_argument('--encoder-momentum', type=float, default=None,
                         help="momentum for the key encoder (0.999 for In-Shop dataset)")
 
-    # Dataset parameters
+    # MISC
+    parser.add_argument('--logging-freq', type=int, default=50)
     parser.add_argument('--output-dir', default='./outputs', help='path where to save, empty for no saving')
     parser.add_argument('--log-dir', default='./logs', help='path where to tensorboard log')
     parser.add_argument('--device', default='cuda:0', help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--num-workers', default=16, type=int)
-    parser.add_argument('--pin-mem', action='store_true',
-                        help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
-    parser.add_argument('--no-pin-mem', action='store_false', dest='pin_mem')
-
-    parser.set_defaults(pin_mem=True)
 
     return parser
 
@@ -115,17 +96,21 @@ def main(args):
 
     # get training/query/gallery dataset
     dataset_train, dataset_query, dataset_gallery = get_dataset(args)
-    logging.info(f"number of training examples: {len(dataset_train)}")
-    logging.info(f"number of query examples: {len(dataset_query)}")
+    logging.info(f"Number of training examples: {len(dataset_train)}")
+    logging.info(f"Number of query examples: {len(dataset_query)}")
+
+    sampler_train = RandomSampler(dataset_train)
+    if args.m: sampler_train = MPerClassSampler(dataset_train.labels, m=args.m, batch_size=args.batch_size)
 
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train,
+        sampler=sampler_train,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=False,
-        shuffle=True,
     )
+
     data_loader_query = torch.utils.data.DataLoader(
         dataset_query,
         batch_size=args.batch_size,
@@ -134,6 +119,7 @@ def main(args):
         drop_last=False,
         shuffle=False
     )
+
     data_loader_gallery = None
     if dataset_gallery is not None:
         data_loader_gallery = torch.utils.data.DataLoader(
@@ -146,7 +132,6 @@ def main(args):
         )
 
     # get model
-    logging.info(f"Creating model: {args.model}")
     model = create_model(
         args.model,
         pretrained=True,
@@ -170,7 +155,7 @@ def main(args):
         momentum_encoder.to(device)
     model.to(device)
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logging.info(f'number of params: {round(n_parameters / 1_000_000, 2):.2f} M')
+    logging.info(f'Number of params: {round(n_parameters / 1_000_000, 2):.2f} M')
 
     # get optimizer
     optimizer = create_optimizer(args, model)
@@ -188,14 +173,12 @@ def main(args):
         device=device
     )
     loss_scaler = NativeScaler()
-    logging.info(f"criterion: {criterion}")
 
     log_writer = None
     if args.log_dir is not None:
         os.makedirs(args.log_dir, exist_ok=True)
         log_writer = SummaryWriter(log_dir=args.log_dir)
 
-    logging.info(f"Start training for {args.max_iter:,} iterations")
     start_time = time.time()
     train(
         model,
@@ -239,11 +222,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.log_dir:
-        args.log_dir = os.path.join(args.log_dir, args.data_set)
+        args.log_dir = os.path.join(args.log_dir, args.dataset)
         Path(args.log_dir).mkdir(parents=True, exist_ok=True)
 
     if args.output_dir:
-        args.output_dir = os.path.join(args.output_dir, args.data_set)
+        args.output_dir = os.path.join(args.output_dir, args.dataset)
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     main(args)

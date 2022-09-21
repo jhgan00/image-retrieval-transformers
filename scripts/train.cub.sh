@@ -1,36 +1,45 @@
+# set data_path
+data_path=/data/CUB_200_2011
+
 # IRT_O
-#python main.py \
-#  --model deit_small_patch16_224 \
-#  --max-iter 0 \
-#  --data-set cub200 \
-#  --data-path ./data/CUB_200_2011 \
-#  --rank 1 2 4 8
+python main.py \
+  --model deit_small_patch16_224 \
+  --max-iter 0 \
+  --dataset cub200 \
+  --data-path $data_path \
+  --rank 1 2 4 8 \
+  --logging-freq 10 \
+  --device cuda:0
 
 # IRT_L
 python main.py \
   --model deit_small_patch16_224 \
   --max-iter 2000 \
-  --data-set cub200 \
-  --data-path ./data/CUB_200_2011 \
+  --dataset cub200 \
+  --data-path $data_path \
   --rank 1 2 4 8 \
-  --lambda-reg 0
+  --lambda-reg 0 \
+  --logging-freq 10 \
+  --device cuda:0
 
-# IRT_R
+## IRT_R
 python main.py \
   --model deit_small_patch16_224 \
   --max-iter 2000 \
-  --data-set cub200 \
-  --data-path ./data/CUB_200_2011 \
+  --dataset cub200 \
+  --data-path $data_path \
   --rank 1 2 4 8 \
   --lambda-reg 0.7 \
-  --device cuda:1
+  --logging-freq 10 \
+  --device cuda:0
 
 # IRT_R
 python main.py \
   --model deit_small_distilled_patch16_224 \
   --max-iter 2000 \
-  --data-set cub200 \
-  --data-path ./data/CUB_200_2011 \
+  --dataset cub200 \
+  --data-path $data_path \
   --rank 1 2 4 8 \
   --lambda-reg 0.7 \
-  --device cuda:2
+  --logging-freq 10 \
+  --device cuda:0

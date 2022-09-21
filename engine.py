@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from metric import recall
-from xbm import XBM, initialize_xbm, momentum_update_key_encoder
+from xbm import XBM, momentum_update_key_encoder
 
 
 def train(
@@ -32,12 +32,6 @@ def train(
 
     while iteration < args.max_iter:
 
-        if iteration == args.xbm_warmup_steps:
-            if args.xbm_random_init:
-                logging.info("Initializing XBM")
-                initialize_xbm(xbm, encoder, data_loader, device)
-            logging.info("XBM is activated")
-
         try:
             images, targets = _train_loader.next()
         except StopIteration:
@@ -47,30 +41,30 @@ def train(
         images = images.to(device)
         targets = targets.to(device)
 
-        with torch.cuda.amp.autocast():
-            features = encoder(images)
-            if isinstance(features, tuple):
-                features = features[0]
-            features = F.normalize(features, dim=1)
+        features = encoder(images)
+        if isinstance(features, tuple):
+            features = features[0]
+        features = F.normalize(features, dim=1)
 
-        if iteration >= args.xbm_warmup_steps:
-            if encoder_k is not None:
-                with torch.no_grad(), torch.cuda.amp.autocast():
-                    features_k = encoder_k(images)
-                    if isinstance(features_k, tuple):
-                        features_k = features_k[0]
-                    features_k = F.normalize(features_k, dim=1)
-            else:
-                features_k = features
-            xbm.enqueue_dequeue(features_k.detach(), targets.detach())
+        if encoder_k is not None:
+            with torch.no_grad(), torch.cuda.amp.autocast():
+                features_k = encoder_k(images)
+                if isinstance(features_k, tuple):
+                    features_k = features_k[0]
+                features_k = F.normalize(features_k, dim=1)
+        else:
+            features_k = features
+        xbm.enqueue_dequeue(features_k.detach(), targets.detach())
 
         loss_contr = criterion(features, targets)
         loss_koleo = regularization(features)
-        if iteration >= args.xbm_warmup_steps:
-            xbm_features, xbm_targets = xbm.get()
-            loss_contr += criterion(features, targets, ref_emb=xbm_features, ref_labels=xbm_targets)
+        xbm_features, xbm_targets = xbm.get()
+        loss_contr += criterion(features, targets, ref_emb=xbm_features, ref_labels=xbm_targets)
 
         loss = loss_contr + loss_koleo * args.lambda_reg
+
+        loss_contr_value = loss_contr.item()
+        loss_koleo_value = loss_koleo.item()
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
@@ -86,7 +80,7 @@ def train(
         if encoder_k is not None:
             momentum_update_key_encoder(encoder, encoder_k, args.encoder_momentum)
 
-        if (iteration > 0 and iteration % 20 == 0) or iteration == args.max_iter:
+        if (iteration > 0 and iteration % args.logging_freq == 0) or iteration == args.max_iter:
             logging.info(
                 f"Iteration [{iteration:5,}/{args.max_iter:5,}] "
                 f"contrastive: {loss_contr.item():.4f}  "
@@ -94,7 +88,9 @@ def train(
                 f"total_loss: {loss_value:.4f}  "
             )
             if log_writer is not None:
-                log_writer.add_scalar("loss/train loss", loss_value, iteration)
+                log_writer.add_scalar("loss/contrastive", loss_contr_value, iteration)
+                log_writer.add_scalar("loss/regularization", loss_koleo_value, iteration)
+                log_writer.add_scalar("loss/total", loss_value, iteration)
 
     save_path = os.path.join(args.output_dir, "encoder.pth")
     torch.save(encoder.state_dict(), save_path)
@@ -111,13 +107,12 @@ def evaluate(data_loader_query, data_loader_gallery, encoder, device, log_writer
 
     for (images, targets) in tqdm(data_loader_query, total=len(data_loader_query), desc="query"):
         images = images.to(device)
-        with torch.cuda.amp.autocast():
-            output = encoder(images)
-            if isinstance(output, tuple):
-                output = output[0]
-            output = F.normalize(output, dim=1)
-            query_features.append(output.detach().cpu())
-            query_labels += targets.tolist()
+        output = encoder(images)
+        if isinstance(output, tuple):
+            output = output[0]
+        output = F.normalize(output, dim=1)
+        query_features.append(output.detach().cpu())
+        query_labels += targets.tolist()
 
     query_features = torch.cat(query_features, dim=0)
     query_labels = torch.LongTensor(query_labels)
