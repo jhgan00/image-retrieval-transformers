@@ -7,7 +7,7 @@ google-auth-oauthlib==0.4.6
 grpcio==1.46.3
 idna==3.3
 importlib-metadata==4.11.4
-joblib==1.1.0
+joblib==1.1.1
 Markdown==3.3.7
 numpy==1.21.6
 oauthlib==3.2.0
